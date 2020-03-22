@@ -1,0 +1,21 @@
+Voltage range:
+
+ESP-chip allows 0-1v range
+NodeMCU kit includes a voltage divider (220K + 100K resistors) to allow 0-3.3v
+
+My Amica NodeMCU ESP8266 seems to reach maximum ADC value around 3.2v. I had to reduce input voltage to avoid early saturation.
+
+Schematics:
+
+To maximize sensor range I connected the LDR like this:
+
+
+3.3V ------ LDR ------- A0
+                  |
+                  |
+                  |
+                1Kohm resistor
+                  |
+                  |
+                  |
+                 GND
