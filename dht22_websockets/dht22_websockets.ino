@@ -102,7 +102,9 @@ void setupSerialMonitor() {
   Serial.setTimeout(2000);
 
   // Wait for serial to initialize.
-  while(!Serial) { }
+  while(!Serial) {
+    delay(50);
+  }
 }
 
 void setupWebServer() {
