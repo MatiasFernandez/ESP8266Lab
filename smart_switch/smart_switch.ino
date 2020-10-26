@@ -8,12 +8,16 @@
 #include <NTPClient.h>            //NTP Client for time/date synchronization
 #include <WiFiUdp.h>              //Needed by NTP client
 
+#include <WebSocketsServer.h>
+
 #include <ArduinoJson.h>          //https://github.com/bblanchon/ArduinoJson
 
 #define AP_SSID "cosito"
 #define AP_PASSWORD "1234567890"
 
 #define WIFI_RESET_PIN D1
+#define SMART_SWITCH_PIN BUILTIN_LED
+#define STATUS_REPORT_DELAY_MS 5000
 
 struct Config {
   char ntp_server[40];
@@ -24,12 +28,23 @@ Config config;
 
 bool shouldSaveConfig = false;
 
+struct SmartSwitch {
+  boolean status = false;
+};
+
+SmartSwitch smartSwitch;    
+
 const long timeZoneOffset = -3 * 60 * 60; // GMT-3
 
 WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP, timeZoneOffset);
 
 boolean clockSynchronized = false;
+
+WebSocketsServer webSocket(81);
+ESP8266WebServer webServer;
+
+unsigned long lastStatusReportAt = 0;
 
 void saveConfigCallback () {
   Serial.println(F("New configuration provided."));
@@ -57,6 +72,7 @@ void setupConfiguration() {
 
 void setupPins() {
   pinMode(WIFI_RESET_PIN, INPUT_PULLUP);
+  pinMode(SMART_SWITCH_PIN, OUTPUT);
 }
 
 void setupWifi() {
@@ -105,6 +121,16 @@ void setupSerialMonitor() {
   while(!Serial) {
     delay(50);
   }
+}
+
+void setupWebServer() {
+  Serial.println(F("Initializing web server"));
+  
+  webServer.serveStatic("/", SPIFFS, "/index.html");
+
+  webServer.begin();
+
+  Serial.println(F("Web server initialized"));
 }
 
 void loadConfiguration(const char *filename, Config &config) {
@@ -171,25 +197,96 @@ void updateClock() {
   }
 }
 
+void reportStatus() {
+  StaticJsonDocument<JSON_OBJECT_SIZE(3)> json;
+  
+  json["time"] = timeClient.getFormattedTime();
+  json["status"] = smartSwitch.status;
+  
+  String webSocketMessage;
+  
+  serializeJson(json, webSocketMessage);
+  
+  webSocket.broadcastTXT(webSocketMessage);
+
+  lastStatusReportAt = millis();
+}
+
+void enableSwitch() {
+  smartSwitch.status = true;
+  digitalWrite(SMART_SWITCH_PIN, LOW);
+}
+
+void disableSwitch() {
+  smartSwitch.status = false;
+  digitalWrite(SMART_SWITCH_PIN, HIGH);
+}
+
+boolean shouldReportStatus() {
+  return millis() - lastStatusReportAt > STATUS_REPORT_DELAY_MS;
+}
+
+void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t lenght) {
+  switch (type) {
+    case WStype_DISCONNECTED:             // if the websocket is disconnected
+      Serial.printf("[%u] Disconnected!\n", num);
+      break;
+    case WStype_CONNECTED: {
+      IPAddress ip = webSocket.remoteIP(num);
+      Serial.printf("[%u] Connected from %d.%d.%d.%d url: %s\n", num, ip[0], ip[1], ip[2], ip[3], payload);
+      }
+      break;
+    case WStype_TEXT:  {                   // if new text data is received
+        Serial.printf("[%u] get Text: %s\n", num, payload);
+        StaticJsonDocument<256> doc;
+  
+        DeserializationError error = deserializeJson(doc, payload);
+    
+        if (error) {
+          Serial.print(F("Failed to parse ws message: "));
+          Serial.println(error.c_str());
+        }
+        
+        boolean enable = doc["enable"];
+        Serial.println(enable);
+        
+        if (enable) {
+          Serial.println("enable switch");
+          enableSwitch();
+        } else {
+          Serial.println("disable switch");
+          disableSwitch();
+        }
+      }
+      break;
+  }
+}
+
 void setup() {
   setupPins();
   setupSerialMonitor();
+
+  Serial.print(F("Startup reason:"));
+  Serial.println(ESP.getResetReason());
+  
   setupConfiguration();
   setupWifi();
   setupClock();
+  setupWebServer();
+  webSocket.begin();
+  webSocket.onEvent(webSocketEvent);   
+
+  Serial.println(F("Device Started"));
 }
 
 
 void loop() {
+  webSocket.loop();
+  webServer.handleClient();
+
+  if(shouldReportStatus()) {
+    reportStatus();
+  }
+  
   updateClock();
-
-  Serial.print(F("Clock synchronized: "));
-  Serial.println(clockSynchronized);
-
-  Serial.println(millis());
-
-  Serial.println(timeClient.getFormattedTime());
-  Serial.println(timeClient.getEpochTime());
-
-  delay(1000);
 }
