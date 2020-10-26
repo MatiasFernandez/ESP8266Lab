@@ -127,6 +127,7 @@ void setupWebServer() {
   Serial.println(F("Initializing web server"));
   
   webServer.serveStatic("/", SPIFFS, "/index.html");
+  webServer.serveStatic("/app.css", SPIFFS, "/app.css");
 
   webServer.begin();
 

@@ -1,0 +1,13 @@
+html {
+    font-size: 40px;
+}
+
+body {
+    display: flex;
+    justify-content: center;
+    width: 100%;
+}
+
+.toggle-button-container {
+    margin-top: 0.5em;
+}
