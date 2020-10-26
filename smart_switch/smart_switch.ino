@@ -4,6 +4,7 @@
 #include <DNSServer.h>            //Local DNS Server used for redirecting all requests to the configuration portal
 #include <ESP8266WebServer.h>     //Local WebServer used to serve the configuration portal
 #include <WiFiManager.h>          //https://github.com/tzapu/WiFiManager WiFi Configuration Magic
+#include <ESP8266mDNS.h>
 
 #include <NTPClient.h>            //NTP Client for time/date synchronization
 #include <WiFiUdp.h>              //Needed by NTP client
@@ -17,7 +18,6 @@
 
 #define WIFI_RESET_PIN D1
 #define SMART_SWITCH_PIN BUILTIN_LED
-#define STATUS_REPORT_DELAY_MS 5000
 
 struct Config {
   char ntp_server[40];
@@ -29,7 +29,7 @@ Config config;
 bool shouldSaveConfig = false;
 
 struct SmartSwitch {
-  boolean status = false;
+  boolean isOn = false;
 };
 
 SmartSwitch smartSwitch;    
@@ -43,8 +43,6 @@ boolean clockSynchronized = false;
 
 WebSocketsServer webSocket(81);
 ESP8266WebServer webServer;
-
-unsigned long lastStatusReportAt = 0;
 
 void saveConfigCallback () {
   Serial.println(F("New configuration provided."));
@@ -77,6 +75,8 @@ void setupPins() {
 
 void setupWifi() {
   Serial.println(F("Initializing Wifi connection."));
+
+  WiFi.hostname("SmartSwitch");
 
   WiFiManager wifiManager;
 
@@ -132,6 +132,20 @@ void setupWebServer() {
   webServer.begin();
 
   Serial.println(F("Web server initialized"));
+}
+
+void setupMDns() {
+  if (!MDNS.begin("smartswitch")) {             
+     Serial.println(F("Failed to start mDNS service"));
+   }
+   Serial.println(F("mDNS started"));
+
+   MDNS.addService("http", "tcp", 80);
+}
+
+void setupWebSocketsServer() {
+  webSocket.begin();
+  webSocket.onEvent(webSocketEvent);  
 }
 
 void loadConfiguration(const char *filename, Config &config) {
@@ -201,43 +215,41 @@ void updateClock() {
 void reportStatus() {
   StaticJsonDocument<JSON_OBJECT_SIZE(3)> json;
   
-  json["time"] = timeClient.getFormattedTime();
-  json["status"] = smartSwitch.status;
+  json["type"] = "statusReport";
+  json["clockSynchronized"] = clockSynchronized;
+  json["isOn"] = smartSwitch.isOn;
   
   String webSocketMessage;
   
   serializeJson(json, webSocketMessage);
   
   webSocket.broadcastTXT(webSocketMessage);
-
-  lastStatusReportAt = millis();
 }
 
-void enableSwitch() {
-  smartSwitch.status = true;
-  digitalWrite(SMART_SWITCH_PIN, LOW);
-}
-
-void disableSwitch() {
-  smartSwitch.status = false;
-  digitalWrite(SMART_SWITCH_PIN, HIGH);
-}
-
-boolean shouldReportStatus() {
-  return millis() - lastStatusReportAt > STATUS_REPORT_DELAY_MS;
+void toggleSwitch(boolean enable) {
+  smartSwitch.isOn = enable;
+  
+  if(enable) {
+    digitalWrite(SMART_SWITCH_PIN, LOW);
+  } else {
+    digitalWrite(SMART_SWITCH_PIN, HIGH);
+  }
+  
+  reportStatus();
 }
 
 void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t lenght) {
   switch (type) {
-    case WStype_DISCONNECTED:             // if the websocket is disconnected
+    case WStype_DISCONNECTED: // if the websocket is disconnected
       Serial.printf("[%u] Disconnected!\n", num);
       break;
     case WStype_CONNECTED: {
-      IPAddress ip = webSocket.remoteIP(num);
-      Serial.printf("[%u] Connected from %d.%d.%d.%d url: %s\n", num, ip[0], ip[1], ip[2], ip[3], payload);
+        IPAddress ip = webSocket.remoteIP(num);
+        Serial.printf("[%u] Connected from %d.%d.%d.%d url: %s\n", num, ip[0], ip[1], ip[2], ip[3], payload);
+        reportStatus();
       }
       break;
-    case WStype_TEXT:  {                   // if new text data is received
+    case WStype_TEXT:  { // if new text data is received
         Serial.printf("[%u] get Text: %s\n", num, payload);
         StaticJsonDocument<256> doc;
   
@@ -247,17 +259,8 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t lenght
           Serial.print(F("Failed to parse ws message: "));
           Serial.println(error.c_str());
         }
-        
-        boolean enable = doc["enable"];
-        Serial.println(enable);
-        
-        if (enable) {
-          Serial.println("enable switch");
-          enableSwitch();
-        } else {
-          Serial.println("disable switch");
-          disableSwitch();
-        }
+                
+        toggleSwitch(doc["enable"]);
       }
       break;
   }
@@ -274,20 +277,18 @@ void setup() {
   setupWifi();
   setupClock();
   setupWebServer();
-  webSocket.begin();
-  webSocket.onEvent(webSocketEvent);   
+  setupWebSocketsServer(); 
+  setupMDns();
 
+  toggleSwitch(false);
+  
   Serial.println(F("Device Started"));
 }
-
 
 void loop() {
   webSocket.loop();
   webServer.handleClient();
-
-  if(shouldReportStatus()) {
-    reportStatus();
-  }
+  MDNS.update();
   
   updateClock();
 }

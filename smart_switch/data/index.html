@@ -15,7 +15,11 @@
             socket = new WebSocket('ws://' + window.location.hostname + ':81');
 
             socket.onmessage = function(event) {
-                console.log(event.data);
+                let message = JSON.parse(event.data)
+
+                if (message.type == 'statusReport') {
+                    document.getElementById("smartSwitchtoggle").checked = message.isOn;
+                }
             }
         }
 
